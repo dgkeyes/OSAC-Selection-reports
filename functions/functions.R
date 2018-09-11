@@ -6,3 +6,4 @@ usethis::edit_r_profile()
 
 use_git(message = "Initial commit")
 
+use_github()
