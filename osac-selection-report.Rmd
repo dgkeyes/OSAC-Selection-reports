@@ -1,0 +1,1403 @@
+---
+title: "OSAC selection report"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      dpi = 600,
+                      fig.align = "center",
+                      fig.width = 6,
+                      fig.height = 4)
+
+library(tidyverse)
+library(googlesheets)
+library(readxl)
+library(skimr)
+library(janitor)
+library(splitstackshape)
+library(ggmap)
+library(scales)
+library(extrafont)
+library(cowplot)
+library(ggridges)
+library(patchwork)
+
+
+
+```
+
+# Colors + Themes + Plots
+
+```{r}
+
+source("functions/functions.R")
+
+# font_import()
+
+```
+
+
+
+# Get Data
+
+```{r}
+
+data <- read_excel("data/Ford_Scholar_Data_Reviewed_Interviewed_Awarded_2014-2018.xlsx") %>% 
+     clean_names() %>% 
+     mutate(year = appyer) %>% 
+     mutate(status_calculated = case_when(
+          str_detect(status, "Interviewed - Awarded") ~ "Recipient",
+          TRUE ~ "Applicant")
+     ) %>% 
+     mutate(interviewed = case_when(
+          str_detect(status, "Not Interviewed") ~ "Not Interviewed",
+          TRUE ~ "Interviewed")
+     )     %>% 
+     mutate(city = str_to_title(city)) %>% 
+     # Add shortened year for labels
+     mutate(year_label = appyer - 2000) 
+
+
+
+# Add Zips
+
+
+us_zips <- read.csv("https://gist.githubusercontent.com/erichurst/7882666/raw/5bdc46db47d9515269ab12ed6fb2850377fd869e/US%2520Zip%2520Codes%2520from%25202013%2520Government%2520Data") %>% 
+     set_names(c("zip",
+                 "lat",
+                 "lon")) 
+
+zips <- data %>% 
+     select(zip) %>% 
+     distinct(zip) %>% 
+     filter(str_length(zip) == 5) %>% 
+     mutate(zip = as.integer(zip)) %>% 
+     left_join(us_zips, by = "zip")
+
+data <- data %>% 
+     left_join(zips, by = "zip")
+
+
+```
+
+# Geocode
+```{r}
+
+
+register_google(key = "AIzaSyBonrLhrEfIT08lG62TA-KOYoaoghonw4Y")
+
+# High Schools
+
+if (file.exists("data/high_schools.csv")) {
+     high_schools <- read_csv("data/high_schools.csv")
+} else {
+     
+     high_schools <- data %>% 
+          select(hs_nam, city, st) %>% 
+          distinct(hs_nam, .keep_all = T) %>% 
+          arrange(hs_nam) %>% 
+          filter(hs_nam != "#Deleted") %>% 
+          filter(!str_detect(hs_nam, "Any ")) %>% 
+          filter(!str_detect(hs_nam, "GED")) %>% 
+          filter(!str_detect(hs_nam, "Non-Oregon")) %>% 
+          filter(!str_detect(hs_nam, "An Alternative High School--in California")) %>%
+          filter(!str_detect(hs_nam, "Unlisted")) %>%
+          filter(!str_detect(hs_nam, "High School Completion")) %>%
+          filter(!str_detect(hs_nam, "Home School")) %>%
+          mutate(str_replace(hs_nam, "(before merger w/Wahtonka)", "")) %>% 
+          mutate(state = ifelse(st == "OR", "Oregon", "California")) %>% 
+          mutate(address = paste(hs_nam, city, state)) %>% 
+          mutate_geocode(address)
+     
+     write_csv(high_schools, "data/high_schools.csv")
+     
+}
+
+# Colleges
+
+if (file.exists("data/colleges.csv")) {
+     
+     colleges <- read_csv("data/colleges.csv")
+     
+} else {
+     
+     colleges <- data %>% 
+          select(planned_college) %>% 
+          unique() %>% 
+          arrange(planned_college) %>% 
+          mutate_geocode(planned_college)
+     
+     write_csv(colleges, "data/colleges.csv")
+}
+
+# Cities
+
+if (file.exists("data/cities.csv")) {
+     cities <- read_csv("data/cities.csv")
+} else {
+     cities <- data %>% 
+          select(city, st) %>% 
+          mutate(city = str_to_title(city)) %>% 
+          mutate(location = paste(city, st, sep = ", ")) %>% 
+          distinct(location, .keep_all = T) %>%  
+          arrange(location) %>% 
+          mutate_geocode(city)
+     
+     write_csv(cities, "data/cities.csv")
+}
+
+
+
+
+
+```
+
+
+
+
+# Student Background
+
+## Gender - facetted
+
+
+
+```{r}
+gender <- data %>% 
+     select(people_id,
+            appyer,
+            year_label,
+            gender,
+            status_calculated) %>% 
+     # Need to create gender categories because there are multiple in single cells
+     mutate(gender_single = case_when(
+          str_detect(gender, paste(c("DI", "TF", "TM", "F, M"), collapse = "|")) ~ "Transgender/Non-Binary",
+          str_detect(gender, "N") ~ "Choose not to answer",
+          str_detect(gender, "M") ~ "Male",
+          str_detect(gender, "F") ~ "Female"
+     )) %>% 
+     filter(gender_single != "Choose not to answer") %>%
+     mutate(gender_single = str_wrap(gender_single, 20)) %>% 
+     group_by(appyer, 
+              year_label,
+              gender_single,
+              status_calculated) %>% 
+     count() %>% 
+     ungroup() %>% 
+     group_by(appyer, 
+              status_calculated,
+              year_label) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     # Add s onto end of status_calculated so it shows up correctly for facets below
+     ungroup() %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(gender_single = fct_infreq(gender_single))
+
+gender_applicants <- gender %>% 
+     filter(status_calculated == "Applicants") %>% 
+     facetted_area_plot(year_label, n, gender_single) +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green,
+                                  tfff_yellow)) +
+     labs(title = "Applicants")
+
+gender_recipients <- gender %>% 
+     filter(status_calculated == "Recipients") %>% 
+     facetted_area_plot(year_label, n, gender_single) +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green,
+                                  tfff_yellow)) +
+     theme(strip.text = element_blank(),
+           panel.grid.minor.y = element_blank()) +
+     labs(title = "Recipients")
+
+
+gender_applicants + gender_recipients +
+     plot_layout(ncol = 1) 
+
+ggsave("plots/gender.pdf",
+       height = 5,
+       width = 10,
+       device = cairo_pdf)
+
+
+```
+
+## Gender - not facetted
+
+```{r}
+gender %>% 
+     # facetted_area_plot(year_label, n, gender_single) +
+     ggplot(aes(x = year_label, 
+                y = n, 
+                fill = gender_single)) +
+     geom_area() +
+     tfff_theme +
+     tfff_theme_faceted +
+     theme(legend.position = "right",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.minor.y = element_blank(),
+           # axis.text.x = element_blank(),
+           panel.grid.major.x = element_blank()) +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green,
+                                  tfff_yellow)) +
+     facet_wrap(~status_calculated,
+                ncol = 1,
+                scales = "free") +
+     # scale_y_continuous(labels = percent_format(accuracy = 1)) +
+     labs(fill = "")
+
+ggsave("plots/gender-altogether.pdf",
+       height = 7,
+       width = 8,
+       device = cairo_pdf)
+```
+
+
+
+
+
+
+## Race/Ethnicity
+
+
+```{r}
+ethnic_groups <- tibble(
+     code = c("ASIAN",
+              "BLACK",
+              "HAWAII",
+              "HISPAN",
+              "MULTI",
+              "NATIVE",
+              "NOTSAY",
+              "OTHER",
+              "UNKN",
+              "WHITE"),
+     group = c("Asian",
+               "Black or African-American",
+               "Native Hawaiian or Pacific Islander",
+               "Hispanic",
+               "Multi-Racial",
+               "American Indian or Alaska Native",
+               "Choose not to say",
+               "Other",
+               "NOT SELECTED",
+               "Caucasian (not Hispanic)")
+)
+
+ethnicity <- data %>%
+     group_by(year, ethnic_group, status_calculated) %>% 
+     summarize(n = n()) %>% 
+     ungroup() %>% 
+     group_by(year, status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     full_join(ethnic_groups, by = c("ethnic_group" = "code")) %>% 
+     na.omit() %>% 
+     ungroup() %>% 
+     filter(group != "Choose not to say") %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(group = str_replace(group,
+                                "Caucasian \\(not Hispanic\\)",
+                                "White")) %>% 
+     mutate(group = str_replace(group,
+                                "Black or African-American",
+                                "African-American")) %>% 
+     mutate(group = str_wrap(group, 20)) %>% 
+     complete(group, status_calculated, year, fill = list(n = 0)) %>% 
+     mutate(year_label = year - 2000) 
+
+# Plots
+
+ethnicity_plot_applicants <- ethnicity %>% 
+     filter(status_calculated == "Applicants") %>% 
+     facetted_area_plot(year_label, n, group) +
+     scale_fill_manual(values = rev(c(tfff_dark_green,
+                                      tfff_light_green,
+                                      tfff_yellow,
+                                      tfff_orange,
+                                      tfff_brown,
+                                      tfff_blue,
+                                      tfff_red))) +
+     labs(title = "Applicants")
+
+ethnicity_plot_recipients <- ethnicity %>% 
+     filter(status_calculated == "Recipients") %>% 
+     facetted_area_plot(year_label, n, group) +
+     scale_fill_manual(values = rev(c(tfff_dark_green,
+                                      tfff_light_green,
+                                      tfff_yellow,
+                                      tfff_orange,
+                                      tfff_brown,
+                                      tfff_blue,
+                                      tfff_red))) +
+     theme(strip.text = element_blank()) +
+     labs(title = "Recipients")
+
+
+ethnicity_plot_applicants + ethnicity_plot_recipients +
+     plot_layout(ncol = 1)
+
+
+ggsave("plots/ethnicity-facetted.pdf",
+       height = 5,
+       width = 10,
+       device = cairo_pdf)
+
+```
+
+
+## Where From
+
+### Get data
+
+
+```{r}
+
+tfff_cities <- read_excel("data/tfff_cities.xlsx") %>% 
+     clean_names() %>% 
+     mutate(city_id = paste(city, state, sep = "_")) %>% 
+     mutate(city_id = str_to_lower(city_id)) %>% 
+     mutate(cntyrgnnam = str_replace(cntyrgnnam, 
+                                     "N Coast", 
+                                     "North Coast"))
+
+data_cities <- data %>% 
+     select(status_calculated, city, year) %>% 
+     mutate(city = str_to_title(city)) %>% 
+     left_join(cities, by = "city") %>% 
+     filter(st %in% c("OR", "CA")) %>% 
+     # Make id variable for merge with tfff_cities.xlsx
+     mutate(city_id = paste(city, st, sep = "_")) %>% 
+     mutate(city_id = str_to_lower(city_id)) %>% 
+     left_join(tfff_cities, by = "city_id")
+
+
+```
+
+
+
+### Region dataframe
+
+```{r}
+tfff_regions <- tfff_cities %>% 
+     select(cntynam,
+            cntyrgnnam) %>% 
+     set_names(c("county", "tfff_region")) %>% 
+     distinct(county, tfff_region) %>% 
+     filter(!is.na(county)) %>% 
+     mutate(county = str_to_lower(county))
+```
+
+### Basemaps
+
+```{r}
+tfff_counties_regions <- map_data("county") %>% 
+     filter(region == "oregon" | subregion == "siskiyou") %>% 
+     left_join(tfff_regions, by = c("subregion" = "county"))
+
+
+
+
+```
+
+### Rural
+
+```{r}
+
+students_locations <- data_cities %>% 
+     select(status_calculated,
+            year,
+            location, 
+            lat, 
+            lon,
+            cntyrgnnam,
+            rural) %>% 
+     rename("region" = "cntyrgnnam") 
+
+
+rural_summary <- students_locations %>% 
+     group_by(status_calculated,
+              year,
+              rural) %>% 
+     count() %>% 
+     ungroup() %>% 
+     complete(status_calculated, year, rural, fill = list(n = 0)) %>% 
+     mutate(year_label = year - 2000) %>% 
+     filter(!is.na(rural)) %>% 
+     group_by(year, status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     filter(rural == TRUE) %>% 
+     ungroup() %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s"))
+
+ggplot(rural_summary, aes(year_label, pct,
+                          fill = status_calculated)) +
+     geom_area() +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted + 
+     theme(strip.text = element_text(face = "bold")) +
+     theme(legend.position = "none",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank()) +
+     scale_y_continuous(labels = percent_format(accuracy = 1),
+                        limits = c(0, .75),
+                        breaks = seq(0, .75, by = .25)) +
+     scale_fill_manual(values = c(tfff_light_green, tfff_dark_green))
+
+
+ggsave("plots/rural-summary.pdf",
+       height = 4, width = 6,
+       device = cairo_pdf)
+
+```
+
+
+### Regions
+
+
+
+```{r}
+regions <- data_cities %>% 
+     select(status_calculated,
+            year,
+            location, 
+            lat, 
+            lon,
+            cntyrgnnam) %>% 
+     rename("region" = "cntyrgnnam") %>% 
+     # Fill in cities with weird spellings that are then missing region data
+     mutate(region = case_when(
+          is.na(region) & str_detect(location, "Arock") ~ "Eastern",
+          is.na(region) & str_detect(location, "Beaver") ~ "Metro",
+          is.na(region) & str_detect(location, "Beverton") ~ "Metro",
+          is.na(region) & str_detect(location, "Burns Paiute") ~ "Eastern",
+          is.na(region) & str_detect(location, ", CA") ~ "Siskiyou",
+          is.na(region) & str_detect(location, "Portlan") ~ "Metro",
+          is.na(region) & str_detect(location, "Helen") ~ "North Coast",
+          is.na(region) & str_detect(location, "Angel") ~ "Willamette",
+          is.na(region) & str_detect(location, "Paul") ~ "Willamette",
+          is.na(region) & str_detect(location, "biren") ~ "Southern",
+          is.na(region) & str_detect(location, "Grants") ~ "Southern",
+          is.na(region) & str_detect(location, "Cloverdale") ~ "North Coast",
+          is.na(region) & str_detect(location, "Oswego") ~ "Metro",
+          is.na(region) & str_detect(location, "Estacada") ~ "Metro",
+          is.na(region) & str_detect(location, "Parkdale") ~ "Central",
+          is.na(region) & str_detect(location, "Lapine") ~ "Central",
+          is.na(region) & str_detect(location, "Lagrande") ~ "Eastern",
+          is.na(region) & str_detect(location, "Crooked") ~ "Central",
+          is.na(region) & str_detect(location, "Finn") ~ "Willamette",
+          is.na(region) & str_detect(location, "Lebanon") ~ "Willamette",
+          is.na(region) & str_detect(location, "Neskwoin") ~ "North Coast",
+          is.na(region) & str_detect(location, "Powell") ~ "Central",
+          is.na(region) & str_detect(location, "Shewood") ~ "Metro",
+          is.na(region) & str_detect(location, "Silverloop") ~ "Willamette",
+          is.na(region) & str_detect(location, "Suherlin") ~ "Southern",
+          is.na(region) & str_detect(location, "Sunny") ~ "Southern",
+          is.na(region) & str_detect(location, "Terrebone") ~ "Central",
+          is.na(region) & str_detect(location, "Triangle") ~ "Willamette",
+          is.na(region) & str_detect(location, "Salem") ~ "Willamette",
+          is.na(region) & str_detect(location, "Woodurn") ~ "Willamette",
+          TRUE ~ region
+     )) %>% 
+     group_by(status_calculated,
+              year,
+              region) %>% 
+     count() %>% 
+     ungroup() %>% 
+     complete(status_calculated, year, region, fill = list(n = 0)) %>% 
+     mutate(year_label = year - 2000) 
+
+
+regions_plot_applicants <- regions %>% 
+     filter(status_calculated == "Applicant") %>% 
+     facetted_area_plot(year_label, n, region) +
+     scale_fill_manual(values = rev(c(tfff_dark_green,
+                                      tfff_light_green,
+                                      tfff_yellow,
+                                      tfff_orange,
+                                      tfff_brown,
+                                      tfff_blue,
+                                      tfff_red))) +
+     labs(title = "Applicants")
+
+regions_plot_recipients <- regions %>% 
+     filter(status_calculated == "Recipient") %>% 
+     facetted_area_plot(year_label, n, region) +
+     scale_fill_manual(values = rev(c(tfff_dark_green,
+                                      tfff_light_green,
+                                      tfff_yellow,
+                                      tfff_orange,
+                                      tfff_brown,
+                                      tfff_blue,
+                                      tfff_red))) +
+     theme(strip.text = element_blank()) +
+     labs(title = "Recipients")
+
+regions_plot_applicants + regions_plot_recipients +
+     plot_layout(ncol = 1) 
+
+
+ggsave("plots/regions-facetted.pdf",
+       height = 6,
+       width = 10,
+       device = cairo_pdf)
+
+
+```
+
+
+
+
+
+
+### Students Locations
+
+```{r}
+
+
+dk_plot_regions_and_people <- function(.data, title) {
+     .data %>% 
+          ggplot(aes(lon, lat)) +
+          geom_polygon(data = tfff_counties_regions, 
+                       aes(x = long,
+                           y = lat,
+                           group = group,
+                           fill = tfff_region)) +
+          geom_jitter(alpha = 0.75,
+                      fill = "white",
+                      color = tfff_medium_gray,
+                      shape = 21,
+                      size = .75) +
+          tfff_theme_faceted +
+          theme_map() +
+          theme(legend.position = "none",
+                plot.title = element_text(hjust = 0.5)) +
+          # plot.title = element_blank()) +
+          coord_map() +
+          facet_grid(cols = vars(year)) +
+          labs(title = title) +
+          scale_fill_manual(values = rev(c(tfff_dark_green,
+                                           tfff_light_green,
+                                           tfff_yellow,
+                                           tfff_orange,
+                                           tfff_brown,
+                                           tfff_blue,
+                                           tfff_red))) 
+}
+
+students_locations_map_applicant <- students_locations %>% 
+     filter(status_calculated == "Applicant") %>% 
+     dk_plot_regions_and_people("Applicants") 
+
+students_locations_map_recipient <- students_locations %>% 
+     filter(status_calculated == "Recipient") %>% 
+     dk_plot_regions_and_people("Recipients") 
+
+students_locations_map_applicant + students_locations_map_recipient +
+     plot_layout(ncol = 1)
+
+
+ggsave("plots/students-locations.pdf",
+       height = 6,
+       width = 10,
+       device = cairo_pdf)
+
+
+```
+
+
+
+# Family
+
+## Expected Family Contribution
+
+```{r}
+expected_family_contribution <- data %>% 
+     select(year, status_calculated, efclvl) %>% 
+     mutate(contribution = parse_number(efclvl)) %>% 
+     mutate(contribution_cat = case_when(
+          contribution == 99 | is.na(contribution) ~ "No info",
+          contribution < 2 ~ "Less than $2000",
+          # contribution < 2 ~ "$1000 to $2000",
+          contribution < 3 ~ "$2000 to $3000",
+          contribution < 4 ~ "$3000 to $4000",
+          contribution < 5 ~ "$4000 to $5000",
+          TRUE ~ "Greater than $5000"
+     )) %>% 
+     group_by(contribution_cat, year, status_calculated) %>% 
+     summarize(n = n()) %>% 
+     ungroup() %>% 
+     # group_by(contribution_cat) %>% 
+     # mutate(pct = prop.table(n))
+     # ungroup() %>% 
+     mutate(contribution_cat = factor(contribution_cat, 
+                                      levels = rev(c("Less than $2000",
+                                                     "$2000 to $3000",
+                                                     "$3000 to $4000",
+                                                     "$4000 to $5000",
+                                                     "Greater than $5000",
+                                                     "No info"))))
+
+expected_family_contribution_plot <- function(.data) {
+     .data %>% 
+          filter(contribution_cat != "No info") %>% 
+          ggplot(aes(year, n,
+                     fill = contribution_cat)) +
+          geom_col(position = "fill") +
+          tfff_theme +
+          tfff_theme_faceted +
+          scale_y_continuous(labels = percent_format(accuracy = 1)) +
+          scale_fill_manual(values = rev(c(tfff_dark_green,
+                                           tfff_light_green,
+                                           tfff_yellow,
+                                           tfff_blue,
+                                           tfff_red))) +
+          theme(legend.title = element_blank(),
+                axis.title = element_blank(),
+                panel.grid.minor = element_blank()) 
+}
+
+
+
+expected_family_contribution_applicant <- expected_family_contribution %>% 
+     filter(status_calculated == "Applicant") %>% 
+     expected_family_contribution_plot() +
+     theme(axis.text.x = element_blank()) +
+     labs(title = "Applicants")
+
+expected_family_contribution_recipient <- expected_family_contribution %>% 
+     filter(status_calculated == "Recipient") %>% 
+     expected_family_contribution_plot() +
+     labs(title = "Recipients")
+
+expected_family_contribution_applicant + expected_family_contribution_recipient +
+     plot_layout(ncol = 1)
+
+
+ggsave("plots/expected-family-contribution.pdf",
+       height = 6,
+       width = 10,
+       device = cairo_pdf)
+
+```
+
+
+## First Generation College
+
+```{r}
+first_gen <- data %>% 
+     select(people_id,
+            year_label,
+            status_calculated,
+            mothered,
+            fathered) %>% 
+     mutate(first_gen_status = case_when(
+          mothered < 3 & fathered < 3 ~ "First Generation",
+          TRUE ~ "Not First Generation"
+     )) %>% 
+     group_by(year_label, first_gen_status, status_calculated) %>% 
+     count() %>% 
+     ungroup() %>% 
+     mutate(status_calculated = paste0(status_calculated, "s")) %>% 
+     group_by(year_label, status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     filter(first_gen_status == "First Generation")
+
+
+ggplot(first_gen, aes(year_label, pct,
+                      group = status_calculated,
+                      fill = status_calculated)) +
+     geom_area() +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     theme(legend.position = "none",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(), 
+           strip.text = element_text(face = "bold"),
+           panel.grid.minor.y = element_blank()) +
+     scale_fill_manual(values = c(tfff_light_green, tfff_dark_green)) +
+     scale_y_continuous(labels = percent_format(accuracy = 1),
+                        limits = c(0, .6))
+
+
+
+ggsave("plots/first-gen.pdf",
+       height = 4,
+       width = 8,
+       device = cairo_pdf)
+
+
+
+```
+
+
+## Parent Education Level
+
+```{r}
+parents_ed <- data %>% 
+     select(year, 
+            status_calculated,
+            mothered,
+            fathered) %>% 
+     gather(key = "parent", value = "ed_level", -c(year, status_calculated)) %>% 
+     mutate(parent = case_when(
+          str_detect(parent, "mother") ~ "Mother",
+          TRUE ~ "Father"
+     )) %>% 
+     group_by(year,
+              status_calculated,
+              parent, 
+              ed_level) %>% 
+     count() %>% 
+     group_by(year,
+              status_calculated,
+              parent) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     mutate(ed_level_text = case_when(
+          ed_level == 1 ~ "Middle School",
+          ed_level == 2 ~ "High School",
+          ed_level == 3 ~ "College or Beyond",
+          ed_level == 4 ~ "Other or Beyond"
+     )) %>% 
+     mutate(ed_level_text = fct_inorder(ed_level_text))
+
+parents_ed %>% 
+     filter(parent == "Father") %>% 
+     ggplot(aes(status_calculated,
+                pct,
+                fill = ed_level_text)) +
+     coord_flip() +
+     geom_col() +
+     facet_grid(cols = vars(year)) +
+     labs(fill = "") +
+     tfff_theme_faceted +
+     theme(legend.position = "bottom")
+
+
+```
+
+
+## Parents' Marital Status
+
+```{r}
+single_parent <- data %>% 
+     mutate(status = case_when(
+          parmarsts %in% c("S", "X", "W") ~ "Single parent",
+          TRUE ~ "Parents together"
+     )) %>% 
+     group_by(appyer, 
+              status_calculated,
+              status) %>% 
+     count() %>% 
+     group_by(appyer, status_calculated) %>% 
+     mutate(pct = prop.table(n))
+
+
+single_parent %>% 
+     filter(status == "Single parent") %>% 
+     ungroup() %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(appyer, pct,
+                group = status_calculated,
+                color = status_calculated)) +
+     geom_point(size = 3,
+                stroke = 3) +
+     geom_line(size = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     theme(legend.position = "none",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           strip.text = element_text(face = "bold")) +
+     scale_y_continuous(limits = c(0, .6),
+                        labels = percent_format(accuracy = 1)) +
+     scale_color_manual(values = c(tfff_light_green,
+                                   tfff_dark_green)) +
+     facet_grid(cols = vars(status_calculated))
+
+ggsave("plots/single-parent.pdf",
+       height = 4,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+
+
+
+
+# Academics
+
+## GPA
+
+### High School - averages
+
+```{r}
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     group_by(appyer, status_calculated) %>% 
+     summarize(avg_gpa = mean(hsgpa, na.rm = T)) %>% 
+     mutate(avg_gpa = round(avg_gpa, 2)) %>% 
+     ggplot(aes(appyer, avg_gpa,
+                group = status_calculated,
+                fill = status_calculated,
+                color = status_calculated)) +
+     geom_point(size = 4,
+                # shape = 21,
+                # fill = "white",
+                stroke = 4) +
+     geom_line(size = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     theme(axis.title = element_blank(),
+           legend.position = "none",
+           strip.text = element_text(face = "bold"),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank()) +
+     scale_y_continuous(breaks = c(3, 3.5, 4),
+                        limits = c(3, 4)) +
+     scale_color_manual(values = c(tfff_light_green,
+                                   tfff_dark_green)) +
+     facet_grid(cols = vars(status_calculated))
+
+ggsave("plots/hs-gpa-average.pdf",
+       height = 4,
+       width = 8,
+       device = cairo_pdf)
+
+
+
+```
+
+
+
+### High School - ridgeline
+
+```{r}
+
+
+
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     # mutate(status_calculated = fct_rev(status_calculated)) %>% 
+     ggplot(aes(x = hsgpa,
+                y = year,
+                fill = status_calculated)) +
+     geom_density_ridges(color = tfff_light_gray) +
+     scale_x_continuous(limits = c(1,4.5),
+                        breaks = seq(1, 4, by = 1)) +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     scale_fill_manual(values = c(tfff_light_green,
+                                  tfff_dark_green)) +
+     theme(legend.position = "none",
+           panel.grid.minor.x = element_blank(),
+           axis.title = element_blank(),
+           plot.title = element_text(face = "bold"))
+
+ggsave("plots/hs-gpa-ridgeline.pdf",
+       height = 6,
+       width = 10,
+       device = cairo_pdf)
+
+
+
+
+
+
+```
+
+
+### High School - histogram
+
+```{r}
+
+
+
+
+hsgpa_plot <- function(group, fill)  {    
+     data %>% 
+          filter(status_calculated == group) %>%
+          ggplot(aes(hsgpa)) +
+          geom_histogram(fill = fill) +
+          facet_wrap(~appyer,
+                     ncol = 5) +
+          tfff_theme +
+          theme(strip.text = element_blank(),
+                legend.position = "none",
+                panel.grid.minor.y = element_blank(),
+                panel.grid.minor.x = element_blank()) +
+          labs(y = "Number of Students",
+               x = "GPA",
+               fill = "") +
+          scale_x_continuous(limits = c(1,4)) 
+}
+
+
+
+hsgpa_plot_applicant <- hsgpa_plot("Applicant", tfff_dark_green)
+hsgpa_plot_recipient <- hsgpa_plot("Recipient", tfff_light_green)
+
+plot_grid(hsgpa_plot_applicant,
+          hsgpa_plot_recipient,
+          ncol = 1)
+
+# ggsave("plots/hs-gpa-histogram.pdf",
+#        height = 6,
+#        width = 8,
+#        device = cairo_pdf)
+
+
+```
+
+
+### College
+
+#### SAT
+
+##### Verbal - avg
+
+```{r}
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     mutate(sat_verbal = as.numeric(satvrb)) %>% 
+     filter(sat_verbal != 0) %>% 
+     group_by(status_calculated, appyer) %>% 
+     summarize(avg_score = mean(sat_verbal)) %>% 
+     ggplot(aes(appyer, avg_score,
+                color = status_calculated)) +
+     geom_point(size = 3,
+                stroke = 3) +
+     geom_line(size = 2) +
+     tfff_theme +
+     theme(legend.position = "none",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank()) +
+     scale_color_manual(values = c(tfff_light_green,
+                                   tfff_dark_green)) +
+     facet_grid(cols = vars(status_calculated)) +
+     scale_y_continuous(limits = c(475, 625),
+                        breaks = pretty_breaks(4))
+
+ggsave("plots/sat-verbal-avg.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+
+
+##### Verbal - ridgeline
+
+```{r}
+
+
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     # mutate(status_calculated = fct_rev(status_calculated)) %>% 
+     mutate(sat_verbal = as.numeric(satvrb)) %>% 
+     filter(sat_verbal != 0) %>% 
+     ggplot(aes(x = sat_verbal,
+                y = year,
+                fill = status_calculated)) +
+     geom_density_ridges(color = tfff_light_gray,
+                         size = 1) +
+     scale_x_continuous(limits = c(200,800),
+                        breaks = seq(200, 800, by = 100)) +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     scale_fill_manual(values = c(tfff_light_green,
+                                  tfff_dark_green)) +
+     theme(legend.position = "none",
+           panel.grid.minor.x = element_blank(),
+           axis.title = element_blank(),
+           plot.title = element_text(face = "bold"),
+           strip.text = element_text(face = "bold"))
+
+ggsave("plots/sat-verbal-ridgeline.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+```
+
+##### Math - avg
+
+```{r}
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     mutate(sat_math = as.numeric(satmth)) %>% 
+     filter(sat_math != 0) %>% 
+     group_by(status_calculated, appyer) %>% 
+     summarize(avg_score = mean(sat_math)) %>% 
+     ggplot(aes(appyer, avg_score,
+                color = status_calculated)) +
+     geom_point(size = 3,
+                stroke = 3) +
+     geom_line(size = 2) +
+     tfff_theme +
+     theme(legend.position = "none",
+           axis.title = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank()) +
+     scale_color_manual(values = c(tfff_light_green,
+                                   tfff_dark_green)) +
+     facet_grid(cols = vars(status_calculated)) +
+     scale_y_continuous(limits = c(475, 625),
+                        breaks = pretty_breaks(4))
+
+ggsave("plots/sat-math-avg.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+##### Math - ridgeline
+
+```{r}
+
+
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     # mutate(status_calculated = fct_rev(status_calculated)) %>% 
+     mutate(sat_math = as.numeric(satmth)) %>% 
+     filter(sat_math != 0) %>% 
+     ggplot(aes(x = sat_math,
+                y = year,
+                fill = status_calculated)) +
+     geom_density_ridges(color = tfff_light_gray) +
+     scale_x_continuous(limits = c(200,800),
+                        breaks = seq(200, 800, by = 100)) +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     scale_fill_manual(values = c(tfff_light_green,
+                                  tfff_dark_green)) +
+     theme(legend.position = "none",
+           panel.grid.minor.x = element_blank(),
+           axis.title = element_blank(),
+           plot.title = element_text(face = "bold"),
+           strip.text = element_text(face = "bold")) 
+
+ggsave("plots/sat-math-ridgeline.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+```
+
+#### ACT
+
+```{r}
+
+
+data %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     mutate(year = as.character(appyer)) %>% 
+     mutate(status_calculated = fct_rev(status_calculated)) %>% 
+     mutate(act = as.numeric(act)) %>% 
+     filter(act != 0) %>% 
+     ggplot(aes(x = act,
+                y = year,
+                fill = status_calculated)) +
+     geom_density_ridges(color = tfff_light_gray) +
+     scale_x_continuous(limits = c(10,40),
+                        breaks = seq(10, 40, by = 5)) +
+     facet_wrap(~status_calculated,
+                ncol = 2) +
+     tfff_theme +
+     tfff_theme_faceted +
+     scale_fill_manual(values = c(tfff_light_green,
+                                  tfff_dark_green)) +
+     theme(legend.position = "none",
+           panel.grid.minor.x = element_blank(),
+           axis.title = element_blank(),
+           plot.title = element_text(face = "bold"),
+           strip.text = element_blank())
+
+# ggsave("plots/act.pdf",
+#        height = 6,
+#        width = 8,
+#        device = cairo_pdf)
+```
+
+
+
+# College Experience
+
+## Intended college
+```{r}
+intended_college <- data %>% 
+     select(people_id, year, status_calculated, planned_college, city) %>% 
+     group_by(planned_college, year, status_calculated) %>% 
+     count() %>% 
+     left_join(colleges, by = "planned_college")  
+
+
+
+colleges_basemap <- map_data("state") %>% 
+     filter(region %in% c("oregon",
+                          "california"))
+
+intended_college_plot_applicants <- intended_college %>% 
+     # Filter out one college outside of Oregon + Cali
+     filter(planned_college != "Martin Methodist College") %>% 
+     filter(status_calculated == "Applicant") %>% 
+     ggplot(aes(x = lon,
+                y = lat,
+                size = n),
+            color = "red") +
+     geom_polygon(data = colleges_basemap,
+                  aes(x = long,
+                      y = lat,
+                      group = group),
+                  fill = "#eeeeee",
+                  color = "white",
+                  size = 1) +
+     geom_point(color = tfff_light_green,
+                alpha = .5) +
+     coord_map() +
+     tfff_theme_faceted +
+     theme_map() +
+     theme(legend.position = "right",
+           plot.title = element_text(hjust = 0.5)) +
+     labs(size = "Number of Students",
+          title = "Applicants") +
+     facet_grid(cols = vars(year)) 
+
+intended_college_plot_recipients <- intended_college %>% 
+     # Filter out one college outside of Oregon + Cali
+     filter(planned_college != "Martin Methodist College") %>% 
+     filter(status_calculated == "Recipient") %>% 
+     ggplot(aes(x = lon,
+                y = lat,
+                size = n),
+            color = "red") +
+     geom_polygon(data = colleges_basemap,
+                  aes(x = long,
+                      y = lat,
+                      group = group),
+                  fill = "#eeeeee",
+                  color = "white",
+                  size = 1) +
+     geom_point(color = tfff_dark_green,
+                alpha = .5) +
+     coord_map() +
+     tfff_theme_faceted +
+     theme_map() +
+     theme(legend.position = "right",
+           strip.text = element_blank(),
+           plot.title = element_text(hjust = 0.5)) +
+     labs(size = "Number of Students",
+          title = "Recipients") +
+     facet_grid(cols = vars(year)) 
+
+
+intended_college_plot_applicants + intended_college_plot_recipients +
+     plot_layout(ncol = 1)
+
+ggsave("plots/intended-colleges.pdf",
+       height = 6,
+       width = 10,
+       device = cairo_pdf)
+
+```
+
+## Intended college segment
+
+```{r}
+intended_college_segment <- data %>% 
+     group_by(status_calculated,
+              college_segment,
+              year_label) %>% 
+     count() %>% 
+     ungroup() %>% 
+     mutate(college_segment = str_replace_all(college_segment,
+                                              c(
+                                                   "C" = "Community College",
+                                                   "I" = "Four-Year Private College",
+                                                   "S" = "Four-Year Public College"
+                                              ))) %>% 
+     mutate(college_segment = factor(college_segment, 
+                                     levels = c("Four-Year Public College",
+                                                "Community College",
+                                                "Four-Year Private College")))
+
+
+intended_college_segment_plot_applicants <- intended_college_segment %>% 
+     filter(status_calculated == "Applicant") %>% 
+     facetted_area_plot(year_label, n, college_segment) +
+     theme(strip.text = element_text(face = "bold")) +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green,
+                                  tfff_yellow)) +
+     labs(title = "Applicants")
+
+intended_college_segment_plot_recipients <- intended_college_segment %>% 
+     filter(status_calculated == "Recipient") %>% 
+     facetted_area_plot(year_label, n, college_segment) +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green,
+                                  tfff_yellow)) +
+     theme(strip.text = element_blank()) +
+     labs(title = "Recipients")
+
+
+intended_college_segment_plot_applicants + intended_college_segment_plot_recipients +
+     plot_layout(ncol = 1)
+
+
+ggsave("plots/intended-college-segment.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+
+## Year in College
+
+```{r}
+year_in_college <- data %>% 
+     group_by(acdyer, appyer, status_calculated) %>% 
+     count() %>% 
+     mutate(year = as.character(acdyer)) %>% 
+     mutate(year = fct_inorder(year))
+
+
+year_in_college_plot <- function(.data) {
+     .data %>% 
+          ggplot(aes(appyer, n,
+                     fill = year)) +
+          geom_col(position = "fill") +
+          scale_y_continuous(labels = percent_format(accuracy = 1)) +
+          tfff_theme +
+          labs(fill = "") +
+          theme(legend.position = "right",
+                axis.title = element_blank(),
+                panel.grid.minor = element_blank()) 
+}
+
+year_in_college_applicants <- year_in_college %>% 
+     filter(status_calculated == "Applicant") %>%
+     year_in_college_plot() +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_yellow,
+                                  tfff_light_green)) +
+     theme(axis.text.x = element_blank())
+
+year_in_college_recipients <- year_in_college %>% 
+     filter(status_calculated == "Recipient") %>%
+     year_in_college_plot() +
+     scale_fill_manual(values = c(tfff_dark_green,
+                                  tfff_light_green)) 
+
+year_in_college_applicants + year_in_college_recipients +
+     plot_layout(ncol = 1)
+
+ggsave("plots/year-in-college.pdf",
+       height = 6,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+
+## Major
+
+```{r}
+majors <- data %>% 
+     mutate(major = case_when(
+          str_detect(major, "Nurs") ~ "Nursing",
+          str_detect(major, "Psychology") ~ "Psychology",
+          str_detect(major, "Education") ~ "Education",
+          str_detect(major, "Biology") ~ "Biology",
+          str_detect(major, "Medicine") ~ "Pre-Med",
+          str_detect(major, "Engineering") ~ "Engineering",
+          str_detect(major, "Political Science") ~ "Political Science",
+          str_detect(major, "Criminal Justice") ~ "Criminal Justice",
+          str_detect(major, "Business") | str_detect(major, "Accounting") ~ "Business/Accounting",
+          TRUE ~ major
+     )) %>% 
+     mutate(major = str_remove(major, "\\.")) %>% 
+     filter(major != "Undecided") %>% 
+     # group_by(major) %>% 
+     group_by(major, appyer, status_calculated) %>%
+     count() %>% 
+     ungroup() %>%
+     group_by(appyer, status_calculated) %>% 
+     arrange(-n) %>% 
+     top_n(5)
+
+majors %>% 
+     filter(status_calculated == "Recipient") %>%
+     filter(appyer == 2017) 
+
+majors_plot <- function(.data, fillcolor) {
+     .data %>% 
+          ggplot(aes(reorder(major, n), n)) +
+          geom_col(fill = fillcolor) +
+          geom_text(aes(label = n),
+                    hjust = 1.5,
+                    color = "white") +
+          tfff_theme +
+          theme(panel.grid = element_blank(),
+                axis.text.x = element_blank(),
+                axis.title = element_blank()) +
+          coord_flip() 
+}
+
+majors_plot_applicants_2018 <- majors %>% 
+     filter(status_calculated == "Applicant" & appyer == 2018) %>% 
+     majors_plot(tfff_light_green)
+
+majors_plot_applicants_2017 <- majors %>% 
+     filter(status_calculated == "Applicant" & appyer == 2017) %>% 
+     majors_plot(tfff_light_green)
+
+majors_plot_recipients_2018 <- majors %>% 
+     filter(status_calculated == "Recipient" & appyer == 2018) %>% 
+     majors_plot(tfff_dark_green)
+
+majors_plot_recipients_2017 <- majors %>% 
+     filter(status_calculated == "Recipient" & appyer == 2017) %>% 
+     majors_plot(tfff_dark_green)
+
+
+majors_plot_applicants_2017 + majors_plot_recipients_2017 +
+     majors_plot_applicants_2018 + majors_plot_recipients_2018 + 
+     plot_layout(ncol = 2)
+
+ggsave("plots/majors.pdf",
+       height = 4,
+       width = 8,
+       device = cairo_pdf)
+
+```
+
+
+
+

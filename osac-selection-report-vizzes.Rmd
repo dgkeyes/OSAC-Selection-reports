@@ -1,0 +1,964 @@
+---
+title: "OSAC Selection Report Data Viz Options"
+output: 
+    html_document:
+        css: style.css
+        toc: true
+        toc_depth: 2
+        toc_float: true
+        df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r packages, include = FALSE}
+library(dkmisc)
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(gt)
+library(sf)
+library(hrbrthemes)
+library(extrafont)
+library(scales)
+library(ggridges)
+```
+
+
+```{r get_data, include = FALSE}
+
+
+# Get geodata stuff
+
+tfff_basemap <- dk_get_tfff_basemap()
+
+# Create tfff_counties data vector to use later
+tfff_counties <- tfff_basemap %>% 
+     pull(name)
+
+
+# Read in geocoded cities data
+
+cities <- read_csv("data/cities.csv") %>% 
+     clean_names()
+
+# Get TFFF cities data for rural stuff later on
+
+tfff_cities <- read_excel("data/tfff_cities.xlsx") %>% 
+     clean_names() %>% 
+     mutate(location = paste(city, state, sep = ", ")) %>% 
+     mutate(cntyrgnnam = str_replace(cntyrgnnam, 
+                                     "N Coast", 
+                                     "North Coast")) %>% 
+     select(location, rural) %>% 
+     mutate(rural = case_when(
+          rural == TRUE ~ "Rural",
+          rural == FALSE ~ "Not Rural"
+     ))
+
+# Read in student data
+
+student_data <- read_excel("data/Ford_Scholar_Data_Reviewed_Interviewed_Awarded_2014-2018.xlsx") %>% 
+     clean_names() %>% 
+     mutate(year = appyer) %>% 
+     mutate(status_calculated = case_when(
+          str_detect(status, "Interviewed - Awarded") ~ "Recipient",
+          TRUE ~ "Applicant")
+     ) %>% 
+     mutate(interviewed = case_when(
+          str_detect(status, "Not Interviewed") ~ "Not Interviewed",
+          TRUE ~ "Interviewed")
+     )     %>% 
+     mutate(city = str_to_title(city)) %>% 
+     # Add shortened year for labels
+     mutate(year_label = appyer - 2000) %>% 
+     mutate(county_name = str_to_title(county_name)) %>% 
+     mutate(location = paste(city, st, sep = ", ")) %>% 
+     left_join(cities) %>% 
+     left_join(tfff_cities)
+
+student_data_tfff_counties <- student_data %>% 
+     filter(county_name %in% tfff_counties)
+
+
+
+
+```
+
+```{r look_and_feel, include = FALSE}
+
+# Colors
+
+tfff_dark_green <- "#265142"
+tfff_light_green <- "#B5CC8E"
+tfff_orange <- "#e65100"
+tfff_yellow <- "#FBC02D"
+tfff_blue <- "#283593"
+tfff_red <- "#B71C1C"
+tfff_brown <- "#51261C"
+tfff_dark_gray <- "#545454"
+tfff_medium_gray <- "#a8a8a8"
+tfff_light_gray <- "#eeeeee"
+
+# Themes
+
+loadfonts()
+
+dk_theme <- theme_ipsum_ps(base_family = "Calibri",
+                           plot_title_family = "Calibri")
+
+theme_set(theme_ipsum_ps())
+
+dk_pie_theme <- theme_ipsum_ps() +
+     theme(legend.position = "none",
+           axis.text.x = element_blank(),
+           axis.text.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.title.x = element_blank(),
+           axis.title.y = element_blank())
+
+```
+
+These are all options. Anything can be tweaked, colors changed, size of things altered, etc. Also, I can get you all the charts as PDFs so you can edit them as you see fit. 
+
+One other note: I'm using the [IBM Plex Sans](https://fonts.google.com/specimen/IBM+Plex+Sans?selection.family=IBM+Plex+Sans) font throughout here (because I like it). I couldn't remember what font you were going to use but just let me know and I can update everything.
+
+
+# Cover
+
+```{r}
+
+student_data_tfff_counties_sf <- student_data_tfff_counties %>% 
+     filter(appyer == 2018) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     st_as_sf(coords = c("lon", "lat"),
+              crs = 4326)
+
+ggplot() +
+     geom_sf(data = tfff_basemap,
+             fill = tfff_light_gray) +
+     geom_sf(data = filter(student_data_tfff_counties_sf, status_calculated == "Recipients"),
+             # size = 1,
+             shape = 21,
+             fill = tfff_light_green,
+             color = tfff_dark_green) +
+     coord_sf(datum = NA) +
+     theme(legend.position = "bottom",
+           plot.title = element_text(hjust = 0.5)) +
+     labs(title = "2018 Recipients")
+
+ggsave("plots-new/2018-recipients.pdf",
+       device = cairo_pdf)
+
+```
+
+
+
+
+# Region/County
+
+## ‘Dot’ map graphic showing 2018 Applicants by county
+
+
+```{r}
+students_by_county_2018 <- student_data_tfff_counties %>% 
+     filter(appyer == 2018) %>% 
+     group_by(status_calculated) %>% 
+     group_by(county_name, status_calculated) %>% 
+     summarize(n = n()) %>% 
+     arrange(status_calculated) %>% 
+     ungroup() %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct_from_county = prop.table(n)) %>% 
+     ungroup() %>% 
+     add_row(county_name = "Sherman") %>% 
+     complete(county_name, status_calculated,
+              fill = list(n = 0,
+                          pct_from_county = 0)) %>% 
+     drop_na(status_calculated) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     right_join(tfff_basemap, by = c("county_name" = "name")) %>%
+     st_as_sf(crs = 4326) 
+
+
+
+ggplot() +
+     geom_sf(data = students_by_county_2018,
+             aes(fill = pct_from_county)) +
+     geom_sf(data = student_data_tfff_counties_sf,
+             size = 0.5,
+             color = tfff_dark_green) +
+     coord_sf(datum = NA) +
+     scale_fill_gradient(low = "white",
+                         high = tfff_dark_green,
+                         labels = percent_format(1),
+                          breaks = seq(0, .15, .05)) +
+     # scale_fill_viridis_c(option = "C",
+     #                      labels = percent_format(1),
+     #                      breaks = seq(0, .15, .05)) +
+     facet_wrap(~status_calculated) +
+     theme(legend.position = "bottom") +
+     labs(fill = "Percent of Total by County",
+          title = "Recipients and Applicants by Location")
+
+ggsave("plots-new/2018-recipients_applicants-by-location.pdf",
+       device = cairo_pdf)
+```
+
+
+
+## Pie chart showing what % of 2018 recipients could be considered Rural
+
+Figure shows percent from rural places.
+
+```{r}
+student_data %>% 
+     filter(status_calculated == "Recipient") %>% 
+     filter(appyer == 2018) %>% 
+     count(rural) %>% 
+     drop_na(rural) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     ggplot(aes(year, pct,
+                fill = rural)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_light_gray, tfff_dark_green)) +
+     dk_pie_theme
+
+ggsave("plots-new/rural-pie.pdf",
+       device = cairo_pdf)
+```
+
+
+## 5 OR 10 year average % of recipients considered rural
+
+This shows data from last 5 years.
+
+```{r}
+
+student_data %>% 
+     filter(status_calculated == "Recipient") %>% 
+     count(rural) %>% 
+     drop_na(rural) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = "last 5") %>% 
+     ggplot(aes(year, pct,
+                fill = rural)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_light_gray, tfff_dark_green)) +
+     dk_pie_theme
+
+ggsave("plots-new/rural-pie-5-years.pdf",
+       device = cairo_pdf)
+```
+
+
+
+
+This shows the last 5 years as an area chart.
+
+```{r}
+student_data %>% 
+     filter(status_calculated == "Recipient") %>% 
+     count(appyer, rural) %>% 
+     drop_na(rural) %>% 
+     group_by(appyer) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     filter(rural == "Rural") %>% 
+     ggplot(aes(appyer, pct)) +
+     geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+ggsave("plots-new/rural-area-chart.pdf",
+       device = cairo_pdf)
+```
+
+Same data as a line chart.
+```{r}
+student_data %>% 
+     filter(status_calculated == "Recipient") %>% 
+     count(appyer, rural) %>% 
+     drop_na(rural) %>% 
+     group_by(appyer) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     filter(rural == "Rural") %>% 
+     ggplot(aes(appyer, pct)) +
+     # geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1),
+                        limits = c(0, .7)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+ggsave("plots-new/rural-line-chart.pdf",
+       device = cairo_pdf)
+```
+
+
+And this shows the last ~25 years as an area chart.
+
+```{r}
+rural_25_years <- tibble(
+     year = seq(1994, 2018, 1),
+     pct = c(.79, .7, .66, .71, .63, .76, .68, .73, .71, .67, .7, .67, .81, .71, .78, .73, .677, .72, .58, .66, .61, .63, .67, .63, .65)
+)
+
+ggplot(rural_25_years, aes(year, pct)) +
+     geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1)) +
+     scale_x_continuous(breaks = seq(1995, 2020, 5),
+                        limits = c(1994, 2018)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+ggsave("plots-new/rural-area-25-years.pdf",
+       device = cairo_pdf)
+
+```
+
+Same data as a line chart.
+
+```{r}
+ggplot(rural_25_years, aes(year, pct)) +
+     # geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1),
+                        limits = c(0, .85)) +
+     scale_x_continuous(breaks = seq(1995, 2020, 5),
+                        limits = c(1994, 2018)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+ggsave("plots-new/rural-line-25-years.pdf",
+       device = cairo_pdf)
+```
+
+
+
+## Siskiyou county callout- What % of CA applicants become recipients VS. what % of OR applicants become recipients
+
+Sorry about the text being small on the Oregon chart. I can adjust this later (or you can edit from the PDF).
+
+
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     count(st, status_calculated) %>% 
+     group_by(st) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     select(st, status_calculated, pct) %>% 
+     mutate(year = 2018) %>% 
+     ggplot(aes(year, pct,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_light_gray, tfff_dark_green)) +
+     facet_wrap(~st) +
+     labs(fill = NULL) +
+     dk_pie_theme +
+     theme(strip.text = element_text(hjust = 0.5))
+
+ggsave("plots-new/siskiyou-pie.pdf",
+       device = cairo_pdf)
+```
+
+
+## If there is one or two high schools that have more than 2 recipients- can we call them out here and possible get a quote?
+
+Here are all high schools with 3 or more recipients in 2018.
+
+```{r}
+student_data %>%
+     filter(appyer == 2018) %>%
+     filter(status_calculated == "Recipient") %>%
+     mutate(hs = str_glue("{hs_nam}")) %>% 
+     count(hs_nam) %>%
+     arrange(desc(n)) %>%
+     filter(n >= 3) %>%
+     set_names(c("High School", "Number of Recipients")) %>%
+     gt()
+
+```
+
+
+# Gender
+
+## Pie Chart 2018 Applicants + Recipients by gender
+
+This shows all genders, but you may want to highlight just males since I know the board cares about that in particular.
+
+```{r}
+
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     select(people_id,
+            appyer,
+            year_label,
+            gender,
+            status_calculated) %>% 
+     # Need to create gender categories because there are multiple in single cells
+     mutate(gender_single = case_when(
+          str_detect(gender, paste(c("DI", "TF", "TM", "F, M"), collapse = "|")) ~ "Transgender/Non-Binary",
+          str_detect(gender, "N") ~ "Choose not to answer",
+          str_detect(gender, "M") ~ "Male",
+          str_detect(gender, "F") ~ "Female"
+     )) %>% 
+     filter(gender_single != "Choose not to answer") %>% 
+     count(status_calculated, gender_single) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     ggplot(aes(year, pct,
+                fill = gender_single)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_light_green, tfff_dark_green, tfff_yellow)) +
+     labs(fill = NULL) +
+     facet_wrap(~status_calculated) +
+     dk_pie_theme +
+     theme(legend.position = "bottom")
+
+ggsave("plots-new/gender-2018.pdf",
+       device = cairo_pdf)
+```
+
+This chart is the same, but just highlights males.
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     select(people_id,
+            appyer,
+            year_label,
+            gender,
+            status_calculated) %>% 
+     # Need to create gender categories because there are multiple in single cells
+     mutate(gender_single = case_when(
+          str_detect(gender, paste(c("DI", "TF", "TM", "F, M"), collapse = "|")) ~ "Transgender/Non-Binary",
+          str_detect(gender, "N") ~ "Choose not to answer",
+          str_detect(gender, "M") ~ "Male",
+          str_detect(gender, "F") ~ "Female"
+     )) %>% 
+     filter(gender_single != "Choose not to answer") %>% 
+     mutate(male = case_when(
+          gender_single == "Male" ~ "Male",
+          TRUE ~ "Not Male"
+     )) %>% 
+     count(status_calculated, male) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     ggplot(aes(year, pct,
+                fill = male)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_gray, tfff_light_gray)) +
+     labs(fill = NULL) +
+     facet_wrap(~status_calculated) +
+     dk_pie_theme +
+     theme(legend.position = "bottom")
+
+ggsave("plots-new/gender-2018-males-only.pdf",
+       device = cairo_pdf)
+```
+
+
+
+## Stacked Column bar chart showing gender over the last 10 years
+
+I only have the data for males. I also only have the 2017 Excel spreadsheet so this shows data from 1994-2017.
+
+```{r}
+
+
+tibble::tribble(
+     ~year,   ~pct,
+     1994, "28%",
+     1995, "35%",
+     1996, "32%",
+     1997, "44%",
+     1998, "41%",
+     1999, "33%",
+     2000, "47%",
+     2001, "35%",
+     2002, "30%",
+     2003, "37%",
+     2004, "38%",
+     2005, "41%",
+     2006, "38%",
+     2007, "35%",
+     2008, "31%",
+     2009, "41%",
+     2010, "38%",
+     2011, "29%",
+     2012, "37%",
+     2013, "31%",
+     2014, "33%",
+     2015, "30%",
+     2016, "28%",
+     2017, "40%"
+) %>% 
+     mutate(pct = parse_number(pct)) %>% 
+     mutate(pct = pct / 100) %>% 
+     ggplot(aes(year, pct)) +
+     geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1)) +
+     scale_x_continuous(breaks = seq(1995, 2020, 5),
+                        limits = c(1994, 2017)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+
+ggsave("plots-new/males-25ish-years.pdf",
+       device = cairo_pdf)
+
+
+```
+
+
+
+# Race/Ethnicity
+
+## Pie chart showing Ethnicity of 2018 applicants + interviewees + recipients
+
+This shows the percent non-white for each group.
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     select(status, ethnic_group) %>% 
+     mutate(race_ethnicity = case_when(
+          ethnic_group == "WHITE" ~ "White",
+          TRUE ~ "Non-White"
+     )) %>% 
+     count(status, race_ethnicity) %>% 
+     group_by(status) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     mutate(status = case_when(
+          status == "Interviewed - Awarded" ~ "Recipients",
+          status == "Interviewed - Not Awarded" ~ "Interviewees",
+          status == "Reviewed - Not Interviewed" ~ "Applicants"
+     )) %>% 
+     ggplot(aes(year, pct,
+                fill = race_ethnicity)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_gray)) +
+     labs(fill = NULL) +
+     facet_wrap(~status) +
+     dk_pie_theme +
+     theme(strip.text = element_text(hjust = 0.5),
+           plot.title = element_text(hjust = 0.5))
+
+ggsave("plots-new/race-2018-pies.pdf",
+       device = cairo_pdf)
+```
+
+
+
+## Line Graph comparing latino recipients over the last 10 years compared to the STATE Latino population (if data is available)
+
+It's proving a bit more challenging to get the state data than I had hoped. If you really want to include it, I can keep digging. If not, let's leave it for now.
+
+```{r}
+tibble::tribble(
+     ~year,  ~pct,
+     1994, 0.19,
+     1995, 0.04,
+     1996, 0.06,
+     1997, 0.05,
+     1998, 0.04,
+     1999, 0.12,
+     2000, 0.07,
+     2001, 0.05,
+     2002, 0.13,
+     2003, 0.09,
+     2004, 0.09,
+     2005,  0.1,
+     2006, 0.12,
+     2007, 0.13,
+     2008, 0.13,
+     2009, 0.19,
+     2010,  0.2,
+     2011, 0.23,
+     2012, 0.11,
+     2013, 0.25,
+     2014,  0.2,
+     2015, 0.31,
+     2016, 0.24,
+     2017, 0.43
+) %>% 
+     ggplot(aes(year, pct)) +
+     # geom_area(fill = tfff_dark_green) +
+     geom_line(color = tfff_dark_green) +
+     scale_y_continuous(labels = percent_format(1)) +
+     scale_x_continuous(breaks = seq(1995, 2020, 5),
+                        limits = c(1994, 2017)) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.minor.x = element_blank(),
+           panel.grid.major.x = element_blank(),
+           panel.grid.minor.y = element_blank())
+
+ggsave("plots-new/latinos-25ish-years.pdf",
+       device = cairo_pdf)
+
+```
+
+
+
+# First Generation/EFC
+
+## Percentage of 2018 applicants + recipients who are First Generation
+
+Figure shows % of students who are first gen.
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     select(status_calculated, mothered, fathered) %>% 
+     mutate(first_gen = case_when(
+          mothered != 3 & fathered != 3 ~ "First Generation",
+          TRUE ~ "Not First Generation"
+     )) %>% 
+     count(status_calculated, first_gen) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(year, pct,
+                fill = first_gen)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_gray)) +
+     labs(fill = NULL) +
+     facet_wrap(~status_calculated) +
+     dk_pie_theme +
+     theme(strip.text = element_text(hjust = 0.5),
+           plot.title = element_text(hjust = 0.5))
+
+ggsave("plots-new/first-gen-2018-pies.pdf",
+       device = cairo_pdf)
+```
+
+
+## Statement about 10 year average of first gen recipients
+
+We
+```{r}
+student_data %>% 
+     select(status_calculated, mothered, fathered) %>% 
+     mutate(first_gen = case_when(
+          mothered != 3 & fathered != 3 ~ "First Generation",
+          TRUE ~ "Not First Generation"
+     )) %>% 
+     count(status_calculated, first_gen) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = "Last 5") %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(year, pct,
+                fill = first_gen)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)), 
+               position = position_stack(vjust = 0.5),
+               color = tfff_light_gray) +
+     coord_polar("y", direction = -1) +
+      scale_fill_manual(values = c(tfff_dark_green, tfff_light_gray)) +
+     labs(fill = NULL) +
+     facet_wrap(~status_calculated) +
+     dk_pie_theme +
+     theme(strip.text = element_text(hjust = 0.5),
+           plot.title = element_text(hjust = 0.5))
+
+ggsave("plots-new/first-gen-10-years.pdf",
+       device = cairo_pdf)
+```
+
+## Table on Expected Family Contribution
+
+This is only for 2018. I showed this to two decimal places (otherwise several items round to 0 percent), though I'd not suggest doing this in the final report because I think this is more detail than people need. I'd put anything super small as "less than 1%".
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     tabyl(efclvl, status_calculated) %>% 
+     adorn_percentages("col") %>% 
+     adorn_pct_formatting(digits = 2, rounding = "half up") %>% 
+     adorn_ns() %>% 
+     mutate(efcmin = (parse_number(efclvl) - 1) * 1000) %>% 
+     mutate(efcmax = efcmin + 1000) %>% 
+     mutate(efc = str_glue("${efcmin}-${efcmax}")) %>% 
+     select(efc, Applicant, Recipient) %>% 
+     rename("EFC Level" = "efc") %>% 
+     gt()
+```
+
+
+# Back Page
+
+## Rural
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     count(rural, status_calculated) %>% 
+     drop_na(rural) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     filter(rural == "Rural") %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(status_calculated, pct,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+ggsave("plots-new/rural-2018-bar.pdf",
+       device = cairo_pdf)
+```
+
+## Gender
+
+This chart just shows % of males.
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     mutate(gender_single = case_when(
+          str_detect(gender, paste(c("DI", "TF", "TM", "F, M"), collapse = "|")) ~ "Transgender/Non-Binary",
+          str_detect(gender, "N") ~ "Choose not to answer",
+          str_detect(gender, "M") ~ "Male",
+          str_detect(gender, "F") ~ "Female"
+     )) %>% 
+     filter(gender_single != "Choose not to answer") %>% 
+     count(gender_single, status_calculated) %>% 
+     drop_na(gender_single) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     filter(gender_single == "Male") %>%
+     ggplot(aes(status_calculated, pct,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+ggsave("plots-new/males-2018-bar.pdf",
+       device = cairo_pdf)
+```
+
+## First Generation
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     mutate(first_gen = case_when(
+          mothered != 3 & fathered != 3 ~ "First Generation",
+          TRUE ~ "Not First Generation"
+     )) %>% 
+     count(first_gen, status_calculated) %>% 
+     drop_na(first_gen) %>% 
+     group_by(status_calculated) %>% 
+     mutate(pct = prop.table(n)) %>% 
+     ungroup() %>% 
+     mutate(year = 2018) %>% 
+     filter(first_gen == "First Generation") %>%
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(status_calculated, pct,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = percent(pct, 1)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+ggsave("plots-new/first-gen-2018-bar.pdf",
+       device = cairo_pdf)
+```
+
+## EFC Contribution
+
+The data for this isn't exact numbers (it's, for example, $0-$1000) so we need to figure out how to show this. It could be, say, $2000 or less. 
+
+## Average GPA & SAT (maybe this is in one table)
+
+### Math SAT
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     group_by(status_calculated) %>% 
+     summarize(math_sat = mean(satmth, na.rm = TRUE)) %>% 
+     mutate(year = 2018) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(status_calculated, math_sat,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = number(math_sat, 1)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+ggsave("plots-new/math-sat-2018-bar.pdf",
+       device = cairo_pdf)
+ 
+```
+
+### Verbal SAT
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     group_by(status_calculated) %>% 
+     summarize(verbal_sat = mean(satmth, na.rm = TRUE)) %>% 
+     mutate(year = 2018) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(status_calculated, verbal_sat,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = number(verbal_sat, 1)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+
+ggsave("plots-new/verbal-sat-2018-bar.pdf",
+       device = cairo_pdf)
+ 
+ 
+```
+
+
+### HS GPA
+
+```{r}
+student_data %>% 
+     filter(appyer == 2018) %>% 
+     group_by(status_calculated) %>% 
+     summarize(gpa = mean(hsgpa, na.rm = TRUE)) %>% 
+     mutate(year = 2018) %>% 
+     mutate(status_calculated = str_glue("{status_calculated}s")) %>% 
+     ggplot(aes(status_calculated, gpa,
+                fill = status_calculated)) +
+     geom_col() +
+     geom_text(aes(label = number(gpa, .01)),
+               vjust = 2,
+               color = "white") +
+     scale_fill_manual(values = c(tfff_dark_green, tfff_light_green)) +
+     labs(fill = NULL) +
+     theme(axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           panel.grid.major = element_blank(),
+           panel.grid.minor = element_blank(),
+           axis.text.y = element_blank(),
+           legend.position = "none")
+
+
+ggsave("plots-new/hs-gpa-2018-bar.pdf",
+       device = cairo_pdf)
+ 
+ 
+```
+
